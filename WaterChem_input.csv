@@ -1,0 +1,247 @@
+####################################################################
+## SUPPORTING INFORMATION TO xxx
+## Author: Qiao-Guo Tan (tanqg@xmu.edu.cn)
+## College of the Environment & Ecology, Xiamen University, China
+## Last update: July 19th, 2020
+####################################################################
+
+library(deSolve) # for using function "ode()" to integrate
+library(minpack.lm) # for using function "optim()" to optimize
+library(ggplot2) # for generating plots
+library(ggrepel) # for adding text onto plots without overlapping
+library(cowplot) # for combining multiple plots
+library(tibble)
+
+# Input the duration of exposure------------------------------------------------
+duration <- 48  # hour, duration of exposure
+
+
+# BLM parameters (i.e., stability constants) estimated from this study----------
+K_Cd <-  10^7.96 # L/mol, stability constant for "Cd2+ + BL = CdBL"
+K_Ca <-  10^4.34 # L/mol, stability constant for "Ca2+ + BL = CaBL"
+K_Mg <-  10^4.21 # L/mol, stability constant for "Mg2+ + BL = MgBL"
+K_Na <-  10^3.42 # L/mol, stability constant for "Na+ + BL = NaBL"
+K_K  <-  10^4.01 # L/mol, stability constant for "K+ + BL = KBL"
+K_H  <-  10^8.79 # L/mol, stability constant for "H+ + BL = HBL"
+
+
+# TK parameters estimated from this study---------------------------------------
+ke <- 0.00308  # 1/hour, elimination rate constant of Cd
+Jmax <- 3.16  #	μg/g/h, maximum uptake rate of Cd 
+
+
+# TD parameters estimated from this study---------------------------------------
+CIT <- 33.5    # ug Cd/g tissue, internal threshold concentration of Cd
+kk <- 0.00267 # g tissue/ug Cd/hour, killing rate of Cd
+h0 <- 0      # 1/hour, background hazard rate, set to be 0 in this study  
+
+
+# Defining the kinetic BLM model------------------------------------------------
+BLM <- function (t, y, parameters) {
+  Cint <- y[1]
+  Hazard <- y[2]
+  C_Cd <- parameters[1]
+  #ug Cd/g tissue/hour, uptake rate of Cd
+  Jin <- Jmax*K_Cd*C_Cd/(1 +K_Cd*C_Cd +K_Ca*C_Ca +K_Mg*C_Mg +K_Na*C_Na +K_K*C_K +K_H*C_H)
+  dCint <- Jin - ke * Cint
+  dHazard <- kk * max(Cint - CIT, 0) + h0
+  list(c(dCint, dHazard))
+}
+
+
+# Defining sum of square function for fitting EC50------------------------------
+ssq_EC50 <- function(parameters_to_fit){
+  C_Cd <- parameters_to_fit[1]
+  out.fit <- ode(y = initial,
+                 times = times,
+                 func = BLM,
+                 parms = c(C_Cd))
+  n <- length(times)
+  Survivorship_final <- exp(-out.fit[,3])[n]
+  ssqres <- (Survivorship_final - 0.5)^2
+  return(ssqres)
+}
+
+
+# Defining the function for calculating No-effect concentration (NEC)-----------
+fn_NEC <- function(C_Cd) {
+  # NEC is calculated by solving the equation: Jin/ke = CIT (or CIT * ke - Jin = 0)
+  CIT * ke - (Jmax*K_Cd*C_Cd/(1 +K_Cd*C_Cd +K_Ca*C_Ca +K_Mg*C_Mg +K_Na*C_Na +K_K*C_K +K_H*C_H))
+}
+
+
+
+## Defining initials for starting the integration-------------------------------
+parameters <- c(C_Cd = 1e-7)  # mol/L, initial value free ion activity of Cd2+
+initial <- c(Cint = 0, Hazard = 0)
+times <- seq(from = 0, to = duration, by = 0.1)
+
+
+# Read in the water chemistry data----------------------------------------------
+# the data_WaterChem <- read.csv("WaterChem_input.csv") 
+
+data_WaterChem <- tribble(~test_ID,	~Cd,	~Ca,	~Mg,	~Na,	~K,	~H,	~frac_free_ion,	~act_coef,	~series,	~level,
+                           "Cd_1",	1.20E-07,	4.52E-04,	3.39E-04,	7.26E-04,	8.00E-05,	1.26E-08,	0.838,	0.759,	"Cd",	1,
+                           "Cd_2",	2.56E-07,	4.26E-04,	3.41E-04,	7.32E-04,	7.94E-05,	1.26E-08,	0.840,	0.759,	"Cd",	2,
+                           "Cd_3",	5.31E-07,	4.21E-04,	3.48E-04,	7.58E-04,	8.29E-05,	1.26E-08,	0.841,	0.759,	"Cd",	3,
+                           "Cd_4",	1.08E-06,	4.22E-04,	3.71E-04,	7.33E-04,	9.23E-05,	1.26E-08,	0.842,	0.758,	"Cd",	4,
+                           "Cd_6",	2.23E-06,	3.63E-04,	3.40E-04,	7.30E-04,	7.72E-05,	1.26E-08,	0.843,	0.758,	"Cd",	5,
+                           "Ca_1",	5.87E-07,	3.18E-05,	3.92E-04,	7.89E-04,	8.64E-05,	1.26E-08,	0.882,	0.794,	"Ca",	1,
+                           "Ca_2",	5.74E-07,	1.49E-04,	3.98E-04,	8.14E-04,	9.26E-05,	1.26E-08,	0.873,	0.785,	"Ca",	2,
+                           "Ca_3",	5.60E-07,	2.48E-04,	3.83E-04,	9.31E-04,	1.11E-04,	1.26E-08,	0.862,	0.776,	"Ca",	3,
+                           "Ca_4",	5.36E-07,	4.22E-04,	3.66E-04,	8.81E-04,	1.06E-04,	1.26E-08,	0.841,	0.759,	"Ca",	4,
+                           "Ca_5",	4.55E-07,	1.01E-03,	3.42E-04,	1.01E-03,	1.26E-04,	1.26E-08,	0.786,	0.716,	"Ca",	5,
+                           "Ca_6",	3.57E-07,	2.06E-03,	3.87E-04,	1.21E-03,	1.99E-04,	1.26E-08,	0.739,	0.684,	"Ca",	6,
+                           "Ca_7",	3.24E-07,	2.50E-03,	3.46E-04,	1.52E-03,	2.76E-04,	1.26E-08,	0.687,	0.649,	"Ca",	7,
+                           "Mg_1",	5.80E-07,	4.42E-04,	2.95E-05,	8.65E-04,	9.34E-05,	1.26E-08,	0.874,	0.806,	"Mg",	1,
+                           "Mg_2",	5.68E-07,	4.24E-04,	1.03E-04,	8.32E-04,	9.21E-05,	1.26E-08,	0.866,	0.794,	"Mg",	2,
+                           "Mg_3",	5.20E-07,	6.14E-04,	1.96E-04,	8.34E-04,	1.04E-04,	1.26E-08,	0.857,	0.781,	"Mg",	3,
+                           "Mg_4",	5.05E-07,	5.55E-04,	3.55E-04,	9.20E-04,	1.12E-04,	1.26E-08,	0.841,	0.759,	"Mg",	4,
+                           "Mg_5",	4.45E-07,	4.17E-04,	9.81E-04,	1.03E-03,	1.28E-04,	1.26E-08,	0.804,	0.709,	"Mg",	5,
+                           "Mg_6",	4.27E-07,	5.89E-04,	9.96E-04,	1.05E-03,	1.35E-04,	1.26E-08,	0.776,	0.675,	"Mg",	6,
+                           "Mg_7",	3.92E-07,	3.79E-04,	1.60E-03,	1.16E-03,	1.70E-04,	1.26E-08,	0.747,	0.640,	"Mg",	7,
+                           "Na_1",	5.26E-07,	5.24E-04,	3.64E-04,	9.45E-04,	1.15E-04,	1.26E-08,	0.841,	0.759,	"Na",	1,
+                           "Na_2",	5.09E-07,	4.78E-04,	3.55E-04,	2.62E-03,	1.47E-04,	1.26E-08,	0.848,	0.728,	"Na",	2,
+                           "Na_3",	4.86E-07,	5.64E-04,	3.60E-04,	4.85E-03,	1.53E-04,	1.26E-08,	0.857,	0.693,	"Na",	3,
+                           "Na_4",	4.60E-07,	9.15E-04,	3.59E-04,	7.84E-03,	3.54E-04,	1.26E-08,	0.863,	0.664,	"Na",	4,
+                           "Na_5",	4.45E-07,	1.03E-03,	3.79E-04,	1.00E-02,	3.50E-04,	1.26E-08,	0.869,	0.640,	"Na",	5,
+                           "Na_6",	4.33E-07,	1.05E-03,	4.34E-04,	1.18E-02,	5.13E-04,	1.26E-08,	0.874,	0.620,	"Na",	6,
+                           "K_1",	  5.36E-07,	4.29E-04,	4.17E-04,	8.41E-04,	4.00E-05,	1.26E-08,	0.844,	0.760,	"K",	1,
+                           "K_2",	  5.35E-07,	4.00E-04,	3.99E-04,	7.85E-04,	9.45E-05,	1.26E-08,	0.841,	0.759,	"K",	2,
+                           "K_3",	  5.32E-07,	4.58E-04,	3.94E-04,	7.92E-04,	1.72E-04,	1.26E-08,	0.842,	0.757,	"K",	3,
+                           "K_4",	  5.28E-07,	4.74E-04,	3.96E-04,	9.02E-04,	4.16E-04,	1.26E-08,	0.843,	0.752,	"K",	4,
+                           "K_5",	  5.25E-07,	4.77E-04,	3.58E-04,	8.39E-04,	7.20E-04,	1.26E-08,	0.845,	0.744,	"K",	5,
+                           "K_6",	  5.20E-07,	4.61E-04,	3.60E-04,	9.75E-04,	1.13E-03,	1.26E-08,	0.847,	0.736,	"K",	6,
+                           "K_7",	  5.12E-07,	5.92E-04,	3.69E-04,	1.07E-03,	1.53E-03,	1.26E-08,	0.848,	0.729,	"K",	7,
+                           "pH_1",	5.92E-07,	4.91E-04,	3.87E-04,	1.24E-03,	1.23E-04,	1.74E-06,	0.879,	0.754,	"pH",	1,
+                           "pH_2",	5.86E-07,	6.43E-04,	3.76E-04,	1.17E-03,	1.20E-04,	3.80E-07,	0.879,	0.753,	"pH",	2,
+                           "pH_3",	5.92E-07,	3.84E-04,	3.46E-04,	1.09E-03,	1.00E-04,	9.33E-08,	0.866,	0.753,	"pH",	3,
+                           "pH_4",	5.84E-07,	4.20E-04,	3.65E-04,	1.15E-03,	1.33E-04,	3.98E-08,	0.860,	0.754,	"pH",	4,
+                           "pH_5",	5.58E-07,	4.40E-04,	3.50E-04,	1.10E-03,	1.13E-04,	1.26E-08,	0.827,	0.759,	"pH",	5,
+                           "pH_6",	5.45E-07,	5.74E-04,	3.67E-04,	1.12E-03,	1.21E-04,	1.05E-08,	0.819,	0.753,	"pH",	6,
+                           "pH_7",	5.80E-07,	4.47E-04,	3.61E-04,	8.66E-04,	1.04E-04,	2.04E-08,	0.845,	0.754,	"pH",	7,
+                           "FA_1",	4.68E-07,	2.96E-04,	3.27E-04,	6.47E-04,	6.39E-05,	6.31E-09,	0.750,	0.799,	"FA",	1,
+                           "FA_2",	4.05E-07,	2.92E-04,	3.36E-04,	6.60E-04,	6.50E-05,	7.08E-09,	0.635,	0.844,	"FA",	2,
+                           "FA_3",	3.32E-07,	2.93E-04,	3.33E-04,	6.56E-04,	6.47E-05,	7.94E-09,	0.530,	0.846,	"FA",	3,
+                           "FA_4",	2.25E-07,	2.95E-04,	3.31E-04,	6.57E-04,	6.44E-05,	9.33E-09,	0.377,	0.802,	"FA",	4,
+                           "FA_5",	1.34E-07,	2.91E-04,	3.28E-04,	6.57E-04,	6.49E-05,	1.17E-08,	0.215,	0.804,	"FA",	5,
+                           "FA_6",	6.60E-08,	2.77E-04,	3.17E-04,	6.51E-04,	6.40E-05,	1.70E-08,	0.106,	0.790,	"FA",	6,
+                           "HA_1",	4.78E-07,	3.01E-04,	3.35E-04,	6.59E-04,	6.39E-05,	9.55E-09,	0.800,  0.728,	"HA",	1,
+                           "HA_2",	3.94E-07,	2.95E-04,	3.37E-04,	6.77E-04,	6.55E-05,	9.33E-09,	0.683,	0.689,	"HA",	2,
+                           "HA_3",	3.22E-07,	2.91E-04,	3.35E-04,	6.88E-04,	6.54E-05,	9.55E-09,	0.569,	0.690,	"HA",	3,
+                           "HA_4",	2.35E-07,	2.94E-04,	3.30E-04,	7.00E-04,	6.58E-05,	1.05E-08,	0.413,	0.729,	"HA",	4,
+                           "HA_5",	1.41E-07,	2.92E-04,	3.32E-04,	7.60E-04,	6.93E-05,	1.07E-08,	0.238,	0.728,	"HA",	5,
+                           "HA_6",	5.62E-08,	2.91E-04,	3.25E-04,	8.61E-04,	7.41E-05,	1.05E-08,	0.094,	0.742,	"HA",	6,
+                           "1-Huihu",   1.01E-07,	6.00E-04,	2.09E-04,	2.17E-03,	6.06E-04,	3.39E-09,	0.169,	0.705,	"Lakes",	1,
+                           "2-Longhu",	3.40E-07,	1.66E-04,	7.25E-05,	3.48E-04,	9.10E-05,	1.41E-08,	0.474,	0.838,	"Lakes",	2,
+                           "3-Dongxi",  8.58E-08,	5.76E-04,	2.54E-04,	1.50E-03,	3.24E-04,	2.51E-09,	0.142,	0.721,	"Lakes",	3,
+                           "4-Dongshan",2.00E-07,	3.60E-04,	9.81E-05,	5.63E-04,	1.30E-04,	5.37E-09,	0.289,	0.797,	"Lakes",	4,
+                           "5-Huinv",   2.49E-07,	1.64E-04,	4.61E-05,	2.82E-04,	9.07E-05,	8.91E-09,	0.352,	0.847,	"Lakes",	5,
+                           "6-Tingxi",	4.26E-07,	8.28E-05,	2.12E-05,	1.64E-04,	4.43E-05,	1.78E-08,	0.607,	0.858,	"Lakes",	6,
+                           "7-Xidong",  2.81E-07,	7.05E-05,	2.32E-05,	2.47E-04,	4.60E-05,	1.45E-08,	0.386,	0.869,	"Lakes",	7,
+                           "8-Zhuba",	  3.23E-07,	9.73E-05,	2.62E-05,	2.76E-04,	4.42E-05,	1.10E-08,	0.441,	0.859,	"Lakes",	8,
+                           "9-Shibi",   3.39E-07,	1.23E-04,	3.84E-05,	2.83E-04,	6.37E-05,	1.12E-08,	0.460,	0.849,	"Lakes",	9,
+                           "10-Dailiao",5.68E-08,	8.74E-04,	1.17E-03,	2.50E-02,	7.01E-04,	3.39E-09,	0.157,	0.458,	"Lakes",	10,
+                           "11-Shidou", 3.26E-07,	9.41E-05,	2.33E-05,	2.62E-04,	5.07E-05,	1.23E-08,	0.444,	0.870,	"Lakes",	11,
+                           "12-Bantou",	3.17E-07,	1.01E-04,	2.48E-05,	2.73E-04,	5.30E-05,	1.23E-08,	0.425,	0.861,	"Lakes",	12)
+
+# Calculating 48-h EC50 and NEC 
+# in test solutions of different water chemistry--------------------------------
+for (i in 1: length(data_WaterChem[,1])) {
+  C_Ca <- data_WaterChem[i,3] #mol/L, free ion activity of Ca2+
+  C_Mg <- data_WaterChem[i,4] #mol/L, free ion activity of Mg2+
+  C_Na <- data_WaterChem[i,5] #mol/L, free ion activity of Na+
+  C_K <- data_WaterChem[i,6] #mol/L, free ion activity of K+
+  C_H <- data_WaterChem[i,7] #mol/L, free ion activity of H+
+  frac_free_ion <- data_WaterChem[i,8] # ratio of free ion of Cd2+ to total Cd 
+  act_coef <- data_WaterChem[i,9] # activity coefficient of Cd2+
+  
+  # Fitting EC50
+  fit_EC50 <- optim(par = parameters,
+                    fn = ssq_EC50,
+                    method = "Brent",
+                    lower = 1e-8,
+                    upper = 1e-5)
+  
+  # Converting EC50 from free ion activity (mol/L) to concentration (ug/L) 
+  EC50 <- as.numeric(fit_EC50$par)/frac_free_ion/act_coef * 112.4 * 1e6
+  
+  # Adding the estimated EC50 into the table
+  data_WaterChem$EC50[i] <- EC50
+  
+  # Fitting NEC 
+  fit_NEC <- uniroot(f = fn_NEC,
+                     interval = c(1e-12, 1e-6),
+                     tol = 1e-20)
+  
+  # Converting NEC from free ion activity (mol/L) to concentration (ug/L) 
+  NEC <- fit_NEC$root/frac_free_ion/act_coef * 112.4 * 1e6
+  
+  # Adding the estimated NEC into the table
+  data_WaterChem$NEC[i] <- NEC
+}
+
+
+# Saving the calculated EC50 and NEC as a Excel file "output_EC50_NEC.csv"------
+write.csv(data_WaterChem,"output_EC50_NEC.csv")
+
+
+
+# Plotting the EC50 and NEC-----------------------------------------------------
+
+# Selecting data other than the Cd seires and natural water series for plotting 
+d <- subset(data_WaterChem, series !="Cd" & series != "Lakes")
+
+# Reordering the data  
+d$series <- factor(d$series,
+                   levels=c("Ca","Mg","Na","K","pH","FA", "HA"))
+
+# 48-h EC50 plot  
+p1 <- ggplot(d, aes(series, EC50, color=factor(level)))+
+  theme_bw()+
+  geom_jitter(position = position_jitter(width=0.05, height=0, seed=3),
+              size=2.5)+
+  scale_y_log10(limits=c(20, 2000))+
+  scale_color_viridis_d(end=0.8, option="B")+
+  geom_text_repel(aes(label=level),
+                  size=3,
+                  position = position_jitter(width=0.05, height=0, seed=3))+
+  annotation_logticks(sides="l")+
+  guides(color="none")+
+  labs(x=NULL,
+       y=expression("Cd 48-h"~EC[50]~"("*mu*g~L^"-1"*")"))+
+  theme(axis.text.x = element_text(size=11, color="black"))
+
+
+p1
+
+
+# No-effect concentration plot
+p2 <- ggplot(d, aes(series, NEC, color=factor(level)))+
+  theme_bw()+
+  geom_jitter(position = position_jitter(width=0.05, height=0, seed=2),
+              size=2.5)+
+  scale_y_log10(limits=c(1, 80))+
+  scale_color_viridis_d(end=0.8)+
+  geom_text_repel(aes(label=level),
+                  size=3,
+                  position = position_jitter(width=0.05, height=0, seed=2))+
+  annotation_logticks(sides="l")+
+  guides(color="none")+
+  labs(x=NULL,
+       y=expression("Cd no-effect concentration"~"("*mu*g~L^"-1"*")"))+
+  theme(axis.text.x = element_text(size=11, color="black"))
+
+p2
+
+
+# Combining the two plots  
+p <- plot_grid(p1, p2, nrow=1,
+               labels=c("a","b"),
+               label_x = c(0.16,0.10))  
+
+p
+
+# Save the plots as a png file--------------------------------------------------
+ggsave("EC50&NEC.png", p, width=506/90, height=335/90, dpi=600, units="in")
+

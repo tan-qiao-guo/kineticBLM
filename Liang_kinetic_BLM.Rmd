@@ -1,0 +1,274 @@
+---
+title: "R code for calculating EC~50~ and NEC using the kinetic BLM"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+## 1.	Load the packages
+
+```{r message=FALSE, warning=FALSE}
+library(deSolve) # for using the function "ode" to integrate
+library(minpack.lm) # for using the function "nls.lm" to fit
+library(ggplot2) # for plotting
+library(ggrepel) # for adding text onto plots without overlapping
+```
+
+
+## 2.	BLM parameters estimated from this study
+
+```{r}
+K_Cd <- 10^7.96 # L/mol, stability constant for Cd2+ + BL = CdBL
+K_Ca <- 10^4.34 # L/mol, stability constant for Ca2+ + BL = CaBL
+K_Mg <- 10^4.21 # L/mol, stability constant for Mg2+ + BL = MgBL
+K_Na <- 10^3.42 # L/mol, stability constant for Na+ + BL = NaBL
+K_K  <- 10^4.01 # L/mol, stability constant for K+ + BL = KBL
+K_H  <- 10^8.79 # L/mol, stability constant for H+ + BL = HBL
+```
+
+
+## 3.	TK-TD parameters estimated from this study
+
+```{r}
+ke <- 0.00308  # 1/hour, elimination rate constant of Cd
+Jmax <- 3.16  # μg/g/h, maximum uptake rate of Cd 
+CIT <- 33.5 # μg/g tissue, internal threshold concentration of Cd
+kk <- 0.00267 # g tissue/ug Cd/hour, killing rate of Cd
+h0 <- 0 # 1/hour, background hazard rate, set to 0 in this study 
+```
+
+
+
+## 4.	Define the kinetic BLM model  
+
+```{r}
+BLM <- function (t, y, parameters) {
+  Cint <- y[1]
+  Hazard <- y[2]
+  C_Cd <- parameters[1]
+  # μg Cd/g tissue/hour, uptake rate of Cd
+  Jin <- Jmax*K_Cd*C_Cd/(1 +K_Cd*C_Cd +K_Ca*C_Ca +K_Mg*C_Mg +K_Na*C_Na +K_K*C_K +K_H*C_H)
+  dCint <- Jin - ke * Cint
+  dHazard <- kk * max(Cint - CIT, 0) + h0
+  list(c(dCint, dHazard))
+}
+```
+
+
+## 5.	Define the objective function for fitting EC~50~
+
+```{r}
+fn_EC50 <- function(parameters_to_fit){
+  C_Cd <- parameters_to_fit[1]
+  out.fit <- ode(y = initial,
+                 times = times,
+                 func = BLM,
+                 parms = c(C_Cd))
+  n <- length(times)
+  Survivorship_final <- exp(-out.fit[,3])[n]
+  
+  # definition of EC50: final survivorship = 0.5
+  obj <- abs(Survivorship_final - 0.5) *1000
+  return(obj)
+}
+
+```
+
+
+## 6.	Define the function for calculating No-effect concentration (NEC)
+
+```{r}
+fn_NEC <- function(C_Cd) {
+  # NEC is calculated by solving the equation: 
+  # Jin/ke = CIT (or CIT * ke - Jin = 0)
+  CIT * ke - (Jmax*K_Cd*C_Cd/(1 +K_Cd*C_Cd +K_Ca*C_Ca +K_Mg*C_Mg +K_Na*C_Na +K_K*C_K +K_H*C_H))
+}
+```
+
+
+## 7.	Define initials for starting the integration
+
+```{r}
+initial <- c(Cint = 0, Hazard = 0)
+```
+
+
+
+## 8.	Read in the water chemistry data
+The csv file should be placed in the “working directory” (Run the code getwd() to get the location of “working directory”). The csv file can be downloaded from the link: https://github.com/tan-qiao-guo/kineticBLM.
+
+```{r}
+data_WaterChem <- read.csv("WaterChem_input.csv") 
+```
+
+Alternatively, the data can be directly imported by reading the csv file deposited on github:
+
+```r
+url <- "https://raw.githubusercontent.com/tan-qiao-guo/kineticBLM/master/WaterChem_input.csv"
+data_WaterChem <- read.csv(url) 
+```
+
+
+## 9.	Calculate 48-h EC~50~ and NEC in test solutions of different water chemistry
+
+```{r}
+# Input the duration of exposure
+duration <- 48  # hour, duration of exposure
+times <- seq(from = 0, to = duration, by = 0.1)
+parameters <- c(C_Cd = 1e-7)  # mol/L, initial value free ion activity of Cd2+
+for (i in 1: length(data_WaterChem[,1])) {
+  C_Ca <- data_WaterChem[i,3] #mol/L, free ion activity of Ca2+
+  C_Mg <- data_WaterChem[i,4] #mol/L, free ion activity of Mg2+
+  C_Na <- data_WaterChem[i,5] #mol/L, free ion activity of Na+
+  C_K <- data_WaterChem[i,6] #mol/L, free ion activity of K+
+  C_H <- data_WaterChem[i,7] #mol/L, free ion activity of H+
+  frac_free_ion <- data_WaterChem[i,8] #ratio of free ion of Cd2+ to total Cd 
+  act_coef <- data_WaterChem[i,9] # activity coefficient of Cd2+
+
+  #calculate the EC50 based on input water chemistry 
+  fit_EC50 <- optim(par=parameters, fn=fn_EC50,
+                    lower=1e-9,
+                    upper=1e-3,
+                    method="Brent")
+  
+  # Converte EC50 from free ion activity (mol/L) to concentration (μg/L) 
+  EC50 <- as.numeric(fit_EC50$par)/frac_free_ion/act_coef * 112.4 * 1e6
+  
+  # Add the estimated EC50 into the table
+  data_WaterChem$EC50[i] <- EC50
+  
+  # Fit NEC 
+  fit_NEC <- uniroot(f = fn_NEC,
+                     interval = c(1e-12, 1e-6),
+                     tol = 1e-20)
+  
+  # Convert NEC from free ion activity (mol/L) to concentration (μg/L) 
+  NEC <- fit_NEC$root/frac_free_ion/act_coef * 112.4 * 1e6
+  
+  # Add the estimated NEC into the table
+  data_WaterChem$NEC[i] <- NEC
+}
+
+```
+
+
+## 10.	Save the calculated EC50 and NEC values as an Excel file  
+
+```{r}
+write.csv(data_WaterChem,"output_EC50_NEC.csv")
+```
+
+The Excel file " output_EC50_NEC.csv " can be found in the working directory.
+
+
+## 11.	Plot the EC~50~ and NEC 
+
+```{r}
+d <- subset(data_WaterChem, series !="Cd" & series != "Lakes")
+# Select data other than the Cd series and the natural water series for plotting 
+
+d$series <- factor(d$series,
+                   levels=c("Ca","Mg","Na","K","pH","FA", "HA"))
+# Reorder the data 
+```
+
+
+### 11.1 48-h EC50 plot
+```{r}
+p1 <- ggplot(d, aes(series, EC50, color=factor(level)))+
+  theme_bw()+
+  geom_jitter(position = position_jitter(width=0.05, height=0, seed=3),
+              size=2.5)+
+  scale_y_log10(limits=c(20, 2000))+
+  scale_color_viridis_d(end=0.8, option="B")+
+  geom_text_repel(aes(label=level),
+                  size=3,
+                  position = position_jitter(width=0.05, height=0, seed=3))+
+  annotation_logticks(sides="l")+
+  guides(color="none")+
+  labs(x="Test series",
+       y=expression("Cd 48-h"~EC[50]~"("*mu*g~L^"-1"*")"))+
+  theme(axis.text.x = element_text(size=11, color="black"))
+
+p1
+```
+
+
+
+### 11.2 No-effect concentration plot
+
+```{r}
+p2 <- ggplot(d, aes(series, NEC, color=factor(level)))+
+  theme_bw()+
+  geom_jitter(position = position_jitter(width=0.05, height=0, seed=2),
+              size=2.5)+
+  scale_y_log10(limits=c(1, 80))+
+  scale_color_viridis_d(end=0.8)+
+  geom_text_repel(aes(label=level),
+                  size=3,
+                  position = position_jitter(width=0.05, height=0, seed=2))+
+  annotation_logticks(sides="l")+
+  guides(color="none")+
+  labs(x="Test series",
+       y=expression("Cd no-effect concentration"~"("*mu*g~L^"-1"*")"))+
+  theme(axis.text.x = element_text(size=11, color="black"))
+
+p2
+```
+
+
+## 12.	Calculate Cd EC50 for different exposure time in Lake 6-Tingxi
+
+```{r}
+duration <- seq(40, 200, 1)  # hour, duration of exposure ranged from 40 h to 200 h
+data_EC50vsTime <- data.frame(Time=duration, EC50=0) # create a table for storing calculated EC50
+parameters <- 1e-7 # initial parameter value
+
+for (i in 1: length(duration)) {
+  times <- seq(from = 0, to = duration[i], by = 0.1)
+  C_Ca <- data_WaterChem[57,3] #mol/L, free ion activity of Ca2+
+  C_Mg <- data_WaterChem[57,4] #mol/L, free ion activity of Mg2+
+  C_Na <- data_WaterChem[57,5] #mol/L, free ion activity of Na+
+  C_K <- data_WaterChem[57,6] #mol/L, free ion activity of K+
+  C_H <- data_WaterChem[57,7] #mol/L, free ion activity of H+
+  frac_free_ion <- data_WaterChem[57,8] # ratio of free ion of Cd2+ to total Cd 
+  act_coef <- data_WaterChem[57,9] # activity coefficient of Cd2+
+  
+  # fit the EC50
+  fit_EC50 <- nls.lm(par=parameters, 
+                     fn=fn_EC50,
+                     lower=1e-9,
+                     upper=1e-5,
+                     control=nls.lm.control(maxiter = 500,
+                                          ftol=1e-20,
+                                          ptol = 1e-20))
+  # Use the latest EC50 as the new intial parameter value
+  parameters <- fit_EC50$par 
+  
+  # Convert EC50 from free ion activity (mol/L) to concentration (ug/L) 
+  EC50 <- as.numeric(fit_EC50$par)/frac_free_ion/act_coef * 112.4 * 1e6
+  
+  # Add the estimated EC50 into the table
+  data_EC50vsTime$EC50[i] <- EC50
+}
+```
+
+
+
+## 13.	Plot Cd EC~50~ vs. exposure time
+
+```{r}
+ggplot(data_EC50vsTime, aes(Time, EC50))+
+  theme_bw()+
+  geom_line(color="navy")+
+  scale_y_continuous(limits=c(0,40))+
+  scale_x_continuous(breaks=seq(48,196,24))+
+  labs(x="Exposure time (h)",
+       y=expression("Cd"~EC[50]~"("*mu*g~L^"-1"*")"))
+```
+
+
+
+
